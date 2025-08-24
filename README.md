@@ -1,8 +1,9 @@
 # MLB Salary Value Explorer
 
+**Live demo:** [Click here to view the Streamlit app](https://mlb-salary-value-mnzenriikbeqp4lmqqtdnz.streamlit.app/)
+
 Predicts MLB **year _t_ salary** from **year _t−1_ performance + context** and highlights **2023 bargains and overpays**.
 
-**Live demo:** https://mlb-salary-value-mnzenriikbeqp4lmqqtdnz.streamlit.app/
 
 ---
 

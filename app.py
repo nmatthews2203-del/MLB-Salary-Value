@@ -198,6 +198,9 @@ if "PA" in bargains.columns or "PA" in overpays.columns:
 
 sort_abs = st.sidebar.toggle("Sort by absolute value gap (largest first)", value=False)
 
+# NEW: Metrics behavior
+metrics_follow_filters = st.sidebar.toggle("Metrics reflect filters", value=True)
+
 # Optional logo (show if exactly one team selected and we have a logo file)
 if team_sel and len(team_sel) == 1:
     logo_path = LOGO_DIR / f"{team_sel[0]}.png"
@@ -218,16 +221,29 @@ st.caption(
 st.markdown("---")
 
 # =========================
-# Metrics (overall 2023) — NO 'Observations'
+# Build filtered views once (reuse for metrics + tabs)
 # =========================
-both = pd.concat([bargains, overpays], ignore_index=True)
-mae_all, wape_all = compute_metrics(both)
+b_view = filter_and_sort(bargains, team_sel, player_query, min_war, min_pa, sort_abs, is_bargain=True)
+o_view = filter_and_sort(overpays, team_sel, player_query, min_war, min_pa, sort_abs, is_bargain=False)
+
+# For "global" metrics (no sidebar filters)
+both_unfiltered = pd.concat([bargains, overpays], ignore_index=True)
+
+# Choose which dataset metrics use
+if metrics_follow_filters:
+    metrics_df = pd.concat([b_view, o_view], ignore_index=True)
+    label = "view"
+else:
+    metrics_df = both_unfiltered
+    label = "2023"
+
+mae_all, wape_all = compute_metrics(metrics_df)
 
 mc1, mc2 = st.columns(2)
 with mc1:
-    st.metric("MAE (2023)", _money(mae_all) if np.isfinite(mae_all) else "—")
+    st.metric(f"MAE ({label})", _money(mae_all) if np.isfinite(mae_all) else "—")
 with mc2:
-    st.metric("WAPE (2023)", f"{wape_all:.1f}%" if np.isfinite(wape_all) else "—")
+    st.metric(f"WAPE ({label})", f"{wape_all:.1f}%" if np.isfinite(wape_all) else "—")
 
 # =========================
 # Tables & Visuals
@@ -238,8 +254,7 @@ tabs = st.tabs(tab_labels)
 
 # Tab 1: Bargains
 with tabs[0]:
-    b_disp = filter_and_sort(bargains, team_sel, player_query, min_war, min_pa, sort_abs, is_bargain=True)
-    st.dataframe(_make_styler(_add_logo_column(b_disp)), use_container_width=True)
+    st.dataframe(_make_styler(_add_logo_column(b_view)), use_container_width=True)
     # Download (source, two-way filtered only)
     if "name" in bargains_raw.columns:
         b_dl = bargains_raw[~bargains_raw["name"].isin(TWO_WAY_PLAYERS)]
@@ -256,8 +271,7 @@ with tabs[0]:
 
 # Tab 2: Overpays
 with tabs[1]:
-    o_disp = filter_and_sort(overpays, team_sel, player_query, min_war, min_pa, sort_abs, is_bargain=False)
-    st.dataframe(_make_styler(_add_logo_column(o_disp)), use_container_width=True)
+    st.dataframe(_make_styler(_add_logo_column(o_view)), use_container_width=True)
     if "name" in overpays_raw.columns:
         o_dl = overpays_raw[~overpays_raw["name"].isin(TWO_WAY_PLAYERS)]
     elif "player" in overpays_raw.columns:
@@ -274,9 +288,6 @@ with tabs[1]:
 # Tab 3: Visuals (optional)
 if VISUALS_AVAILABLE:
     with tabs[2]:
-        # Build the same filtered view the tables are using
-        b_view = filter_and_sort(bargains, team_sel, player_query, min_war, min_pa, sort_abs, is_bargain=True)
-        o_view = filter_and_sort(overpays, team_sel, player_query, min_war, min_pa, sort_abs, is_bargain=False)
         vis = pd.concat([b_view.assign(category="Bargain"), o_view.assign(category="Overpay")], ignore_index=True)
         if {"Actual Salary","Predicted Salary"}.issubset(vis.columns) and len(vis) > 0:
             c1, c2 = st.columns(2)
@@ -309,7 +320,7 @@ if VISUALS_AVAILABLE:
 
 # Combined download of the *filtered views* (what the user is currently seeing)
 st.markdown("### Download current view (filtered)")
-comb = b_disp.assign(category="Bargain").pipe(lambda d: pd.concat([d, o_disp.assign(category="Overpay")], ignore_index=True))
+comb = b_view.assign(category="Bargain").pipe(lambda d: pd.concat([d, o_view.assign(category="Overpay")], ignore_index=True))
 st.download_button(
     "Download combined (filtered view)",
     comb.to_csv(index=False).encode("utf-8"),

@@ -97,7 +97,7 @@ RENAME_MAP = {
     # common alternates
     "actual_salary": "Actual Salary",
     "predicted_salary": "Predicted Salary",
-    "diff": "Value (Actual − Pred)",  # if someone exported Pred-Actual, we’ll still rename; sign may differ
+    "diff": "Value (Actual − Pred)",  # if someone exported Pred-Actual, we still map name (sign may differ)
     "pa": "PA",
     "PA": "PA",
     "age": "Age",
@@ -178,7 +178,7 @@ def filter_and_sort(df: pd.DataFrame, team_sel, player_query, min_war, min_pa, s
     return out
 
 # =========================
-# Year selector (tooltip)
+# Year selector (with tooltip)
 # =========================
 years = _available_years(DATA_DIR)
 if not years:
@@ -201,7 +201,7 @@ bargains_raw, overpays_raw = load_outputs(year)
 bargains = tidy_cols(bargains_raw)
 overpays  = tidy_cols(overpays_raw)
 
-# NEW: guard if the CSVs exist but contain no rows/columns we use
+# Guard: CSVs present but no usable rows
 if bargains.empty and overpays.empty:
     st.warning(f"No data rows found for {year}. "
                f"Check that outputs/top_bargains_{year}.csv and outputs/top_overpays_{year}.csv have content.")
@@ -270,11 +270,11 @@ st.markdown("---")
 b_view = filter_and_sort(bargains, team_sel, player_query, min_war, min_pa, sort_abs, is_bargain=True)
 o_view = filter_and_sort(overpays, team_sel, player_query, min_war, min_pa, sort_abs, is_bargain=False)
 
-# NEW: if filters remove everything, let the user know (don’t stop the app)
+# If filters wipe everything, show info (don't stop)
 if b_view.empty and o_view.empty:
     st.info("No players match the current filters. Try clearing filters or choosing a different team/year.")
 
-# Choose which dataset metrics use
+# Metrics: full-year vs filtered view
 both_unfiltered = pd.concat([bargains, overpays], ignore_index=True)
 if metrics_follow_filters:
     metrics_df = pd.concat([b_view.drop(columns=["Rank"], errors="ignore"),

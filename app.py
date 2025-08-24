@@ -1,3 +1,4 @@
+import re
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -6,7 +7,7 @@ from pathlib import Path
 # =========================
 # Page setup
 # =========================
-st.set_page_config(page_title="MLB Salary Value Explorer — 2023", page_icon="⚾", layout="wide")
+st.set_page_config(page_title="MLB Salary Value Explorer", page_icon="⚾", layout="wide")
 
 TOP_N = 15                 # rows per table
 LOGO_DIR = Path("logos")   # optional local logos folder
@@ -96,7 +97,7 @@ RENAME_MAP = {
     # common alternates
     "actual_salary": "Actual Salary",
     "predicted_salary": "Predicted Salary",
-    "diff": "Value (Actual − Pred)",
+    "diff": "Value (Actual − Pred)",  # if someone exported Pred-Actual, we’ll still rename; sign may differ
     "pa": "PA",
     "PA": "PA",
     "age": "Age",
@@ -117,11 +118,26 @@ def tidy_cols(df: pd.DataFrame) -> pd.DataFrame:
     return out[keep].copy()
 
 @st.cache_data(show_spinner=False)
-def load_outputs():
-    bargains_path = DATA_DIR / "top_bargains_2023.csv"
-    overpays_path = DATA_DIR / "top_overpays_2023.csv"
+def _available_years(data_dir: Path) -> list[int]:
+    years = set()
+    for p in data_dir.glob("top_bargains_*.csv"):
+        m = re.search(r"(\d{4})", p.stem)
+        if not m:
+            continue
+        y = int(m.group(1))
+        if (data_dir / f"top_overpays_{y}.csv").exists():
+            years.add(y)
+    return sorted(years, reverse=True)
+
+@st.cache_data(show_spinner=False)
+def load_outputs(year: int):
+    bargains_path = DATA_DIR / f"top_bargains_{year}.csv"
+    overpays_path = DATA_DIR / f"top_overpays_{year}.csv"
     if not bargains_path.exists() or not overpays_path.exists():
-        st.error("Missing CSVs in outputs/. Please make sure `outputs/top_bargains_2023.csv` and `outputs/top_overpays_2023.csv` exist.")
+        st.error(
+            f"Missing CSVs for {year} in outputs/. "
+            f"Expected `outputs/top_bargains_{year}.csv` and `outputs/top_overpays_{year}.csv`."
+        )
         st.stop()
     b = pd.read_csv(bargains_path)
     o = pd.read_csv(overpays_path)
@@ -162,13 +178,34 @@ def filter_and_sort(df: pd.DataFrame, team_sel, player_query, min_war, min_pa, s
     return out
 
 # =========================
+# Year selector (tooltip)
+# =========================
+years = _available_years(DATA_DIR)
+if not years:
+    st.error("No outputs found. Place files like `outputs/top_bargains_2023.csv` and `outputs/top_overpays_2023.csv`.")
+    st.stop()
+
+year = st.sidebar.selectbox(
+    "Year",
+    years,
+    index=0,
+    help="Years show up only if BOTH files exist: outputs/top_bargains_YYYY.csv and outputs/top_overpays_YYYY.csv."
+)
+
+# =========================
 # Load & prep data
 # =========================
-bargains_raw, overpays_raw = load_outputs()
+bargains_raw, overpays_raw = load_outputs(year)
 
 # Robust column handling -> standardized display schema
 bargains = tidy_cols(bargains_raw)
 overpays  = tidy_cols(overpays_raw)
+
+# NEW: guard if the CSVs exist but contain no rows/columns we use
+if bargains.empty and overpays.empty:
+    st.warning(f"No data rows found for {year}. "
+               f"Check that outputs/top_bargains_{year}.csv and outputs/top_overpays_{year}.csv have content.")
+    st.stop()
 
 # Exclude two-way players
 if "Player" in bargains.columns:
@@ -220,10 +257,10 @@ st.sidebar.caption("Two-way players (e.g., Shohei Ohtani) are excluded from rank
 # =========================
 # Header
 # =========================
-st.title("⚾ MLB Salary Value Explorer — 2023")
+st.title(f"⚾ MLB Salary Value Explorer — {year}")
 st.caption(
-    "Predicts year-t salary from t−1 performance & context to surface **bargains** and **overpays**. "
-    "Model: HistGradientBoostingRegressor on log-salary; train ≤ 2022, test = 2023."
+    f"Predicts year-t salary from t−1 performance & context to surface **bargains** and **overpays**. "
+    f"Current view: **{year}** (predicted from prior-year features). Model: HistGradientBoostingRegressor on log-salary."
 )
 st.markdown("---")
 
@@ -233,6 +270,10 @@ st.markdown("---")
 b_view = filter_and_sort(bargains, team_sel, player_query, min_war, min_pa, sort_abs, is_bargain=True)
 o_view = filter_and_sort(overpays, team_sel, player_query, min_war, min_pa, sort_abs, is_bargain=False)
 
+# NEW: if filters remove everything, let the user know (don’t stop the app)
+if b_view.empty and o_view.empty:
+    st.info("No players match the current filters. Try clearing filters or choosing a different team/year.")
+
 # Choose which dataset metrics use
 both_unfiltered = pd.concat([bargains, overpays], ignore_index=True)
 if metrics_follow_filters:
@@ -241,7 +282,7 @@ if metrics_follow_filters:
     label = "view"
 else:
     metrics_df = both_unfiltered
-    label = "2023"
+    label = f"{year}"
 
 mae_all, wape_all = compute_metrics(metrics_df)
 
@@ -267,9 +308,9 @@ with t1:
     else:
         b_dl = bargains_raw
     st.download_button(
-        "Download bargains (source, two-way filtered)",
+        f"Download bargains {year} (source, two-way filtered)",
         b_dl.to_csv(index=False).encode("utf-8"),
-        "top_bargains_2023.csv",
+        f"top_bargains_{year}.csv",
         "text/csv"
     )
 
@@ -282,9 +323,9 @@ with t2:
     else:
         o_dl = overpays_raw
     st.download_button(
-        "Download overpays (source, two-way filtered)",
+        f"Download overpays {year} (source, two-way filtered)",
         o_dl.to_csv(index=False).encode("utf-8"),
-        "top_overpays_2023.csv",
+        f"top_overpays_{year}.csv",
         "text/csv"
     )
 
@@ -292,9 +333,9 @@ with t2:
 st.markdown("### Download current view (filtered)")
 comb = b_view.assign(category="Bargain").pipe(lambda d: pd.concat([d, o_view.assign(category="Overpay")], ignore_index=True))
 st.download_button(
-    "Download combined (filtered view)",
+    f"Download combined (filtered view, {year})",
     comb.to_csv(index=False).encode("utf-8"),
-    "mlb_value_filtered_combined.csv",
+    f"mlb_value_filtered_combined_{year}.csv",
     "text/csv"
 )
 
@@ -315,10 +356,11 @@ else:
 # About / Caveats
 # =========================
 with st.expander("About this app & caveats"):
-    st.markdown("""
-- **Goal:** Surface 2023 hitter salary inefficiencies by predicting salaries from prior-year performance & context.
-- **Model:** HistGradientBoostingRegressor on **log(salary)**; features include prior-year WAR/plate discipline, age, position group, service time, prior salary, team payroll. Train ≤ 2022, Test = 2023.
-- **Value column:** `Actual − Pred`. Negative → **bargain** (model thinks salary should be higher). Positive → **overpay**.
+    st.markdown(f"""
+- **Goal:** Surface hitter salary inefficiencies by predicting salaries from prior-year performance & context.
+- **Model:** HistGradientBoostingRegressor on **log(salary)**; typical features include prior-year WAR/plate discipline, age, position group, service time, prior salary, team payroll.
+- **This view:** **{year}** salaries predicted from **{year-1}** features (from your exported model outputs).
+- **Value column:** `Actual − Pred`. Negative → **bargain** (model thinks pay should be higher). Positive → **overpay**.
 - **Exclusions:** Two-way players (e.g., Shohei Ohtani) are filtered out since pitching isn’t modeled.
 - **Caveats:** Arbitration rules, multi-year deals, injuries, and option/bonus structures aren’t fully captured; use directionally.
 """)

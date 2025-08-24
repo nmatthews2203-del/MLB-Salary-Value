@@ -6,9 +6,12 @@ from pathlib import Path
 # Try to enable visuals; fall back gracefully if matplotlib isn't installed
 try:
     import matplotlib.pyplot as plt
+    from matplotlib.ticker import FuncFormatter
     VISUALS_AVAILABLE = True
+    _CURRENCY = FuncFormatter(lambda x, pos: f'${x:,.0f}')
 except Exception:
     VISUALS_AVAILABLE = False
+    _CURRENCY = None
 
 # =========================
 # Page setup
@@ -49,7 +52,7 @@ def _style_value_colors(series: pd.Series):
     return ["color: #22c55e" if v < 0 else ("color: #ef4444" if v > 0 else "") for v in series]
 
 def _make_styler(df_num: pd.DataFrame):
-    """Pretty formatting with $, commas, and colored Value column."""
+    """Pretty formatting with $, commas, and colored Value column; hide index."""
     money_cols = ["Actual Salary","Predicted Salary","Value (Actual − Pred)",
                   "Prior Salary (t−1)","Team Payroll (t−1)"]
     fmt = {c: _money for c in money_cols if c in df_num.columns}
@@ -62,6 +65,7 @@ def _make_styler(df_num: pd.DataFrame):
         df_num.style
         .format(fmt)
         .set_properties(subset=["Player"], **{"font-weight": "600"})
+        .hide(axis="index")  # clean look: no DF index
     )
     if "Value (Actual − Pred)" in df_num.columns:
         sty = sty.apply(_style_value_colors, subset=["Value (Actual − Pred)"])
@@ -161,7 +165,11 @@ def filter_and_sort(df: pd.DataFrame, team_sel, player_query, min_war, min_pa, s
             out = out.sort_values("abs_val", ascending=False).drop(columns="abs_val")
         else:
             out = out.sort_values("Value (Actual − Pred)", ascending=not is_bargain)
-    return out.head(TOP_N)
+
+    out = out.head(TOP_N).copy()
+    # Leaderboard rank
+    out.insert(0, "Rank", range(1, len(out) + 1))
+    return out
 
 # =========================
 # Load & prep data
@@ -185,25 +193,34 @@ st.sidebar.header("Filters")
 
 # Team multiselect
 teams = sorted(set(bargains["Team"].dropna().unique()).union(set(overpays["Team"].dropna().unique()))) if "Team" in bargains.columns and "Team" in overpays.columns else []
-team_sel = st.sidebar.multiselect("Teams", teams, default=[])
+team_sel = st.sidebar.multiselect("Teams", teams, default=[], key="teams")
 
-player_query = st.sidebar.text_input("Search player", value="", placeholder="e.g., Alonso")
+player_query = st.sidebar.text_input("Search player", value="", placeholder="e.g., Alonso", key="player_q")
 
-min_war = None
-min_pa = None
-if "WAR (t−1)" in bargains.columns or "WAR (t−1)" in overpays.columns:
-    min_war = st.sidebar.number_input("Min WAR (t−1, optional)", value=0.0, min_value=0.0, step=0.5)
-if "PA" in bargains.columns or "PA" in overpays.columns:
-    min_pa = st.sidebar.number_input("Min PA (optional)", value=0.0, min_value=0.0, step=25.0)
+show_war = ("WAR (t−1)" in bargains.columns) or ("WAR (t−1)" in overpays.columns)
+show_pa  = ("PA" in bargains.columns) or ("PA" in overpays.columns)
 
-sort_abs = st.sidebar.toggle("Sort by absolute value gap (largest first)", value=False)
+min_war = st.sidebar.number_input("Min WAR (t−1, optional)", value=0.0, min_value=0.0, step=0.5, key="min_war") if show_war else None
+min_pa  = st.sidebar.number_input("Min PA (optional)", value=0.0, min_value=0.0, step=25.0, key="min_pa") if show_pa else None
+
+sort_abs = st.sidebar.toggle("Sort by absolute value gap (largest first)", value=False, key="sort_abs")
 
 # NEW: Metrics behavior
-metrics_follow_filters = st.sidebar.toggle("Metrics reflect filters", value=True)
+metrics_follow_filters = st.sidebar.toggle("Metrics reflect filters", value=True, key="metrics_follow_filters")
+
+# Clear filters button
+if st.sidebar.button("Clear filters"):
+    st.session_state["teams"] = []
+    st.session_state["player_q"] = ""
+    if show_war: st.session_state["min_war"] = 0.0
+    if show_pa:  st.session_state["min_pa"]  = 0.0
+    st.session_state["sort_abs"] = False
+    st.session_state["metrics_follow_filters"] = True
+    st.rerun()
 
 # Optional logo (show if exactly one team selected and we have a logo file)
-if team_sel and len(team_sel) == 1:
-    logo_path = LOGO_DIR / f"{team_sel[0]}.png"
+if st.session_state.get("teams") and len(st.session_state["teams"]) == 1:
+    logo_path = LOGO_DIR / f"{st.session_state['teams'][0]}.png"
     if logo_path.exists():
         st.sidebar.image(str(logo_path), use_container_width=True)
 
@@ -231,7 +248,8 @@ both_unfiltered = pd.concat([bargains, overpays], ignore_index=True)
 
 # Choose which dataset metrics use
 if metrics_follow_filters:
-    metrics_df = pd.concat([b_view, o_view], ignore_index=True)
+    metrics_df = pd.concat([b_view.drop(columns=["Rank"], errors="ignore"),
+                            o_view.drop(columns=["Rank"], errors="ignore")], ignore_index=True)
     label = "view"
 else:
     metrics_df = both_unfiltered
@@ -288,7 +306,10 @@ with tabs[1]:
 # Tab 3: Visuals (optional)
 if VISUALS_AVAILABLE:
     with tabs[2]:
-        vis = pd.concat([b_view.assign(category="Bargain"), o_view.assign(category="Overpay")], ignore_index=True)
+        vis = pd.concat([
+            b_view.drop(columns=["Rank"], errors="ignore").assign(category="Bargain"),
+            o_view.drop(columns=["Rank"], errors="ignore").assign(category="Overpay")
+        ], ignore_index=True)
         if {"Actual Salary","Predicted Salary"}.issubset(vis.columns) and len(vis) > 0:
             c1, c2 = st.columns(2)
 
@@ -302,6 +323,9 @@ if VISUALS_AVAILABLE:
                 ax1.set_xlabel("Predicted Salary")
                 ax1.set_ylabel("Actual Salary")
                 ax1.set_title("Actual vs Predicted")
+                if _CURRENCY:
+                    ax1.xaxis.set_major_formatter(_CURRENCY)
+                    ax1.yaxis.set_major_formatter(_CURRENCY)
                 st.pyplot(fig1, use_container_width=True)
 
             # Bar: Top 10 absolute gaps
@@ -314,6 +338,8 @@ if VISUALS_AVAILABLE:
                 ax2.set_xlabel("Absolute Gap ($)")
                 ax2.set_ylabel("")
                 ax2.set_title("Top 10 Absolute Gaps (Filtered View)")
+                if _CURRENCY:
+                    ax2.xaxis.set_major_formatter(_CURRENCY)
                 st.pyplot(fig2, use_container_width=True)
         else:
             st.info("Add filters or ensure salary columns exist to see visuals.")

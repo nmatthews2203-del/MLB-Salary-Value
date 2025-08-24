@@ -3,6 +3,13 @@ import numpy as np
 import streamlit as st
 from pathlib import Path
 
+# Try to enable visuals; fall back gracefully if matplotlib isn't installed
+try:
+    import matplotlib.pyplot as plt
+    VISUALS_AVAILABLE = True
+except Exception:
+    VISUALS_AVAILABLE = False
+
 # =========================
 # Page setup
 # =========================
@@ -10,7 +17,7 @@ st.set_page_config(page_title="MLB Salary Value Explorer — 2023", page_icon="�
 
 TOP_N = 15                 # rows per table
 LOGO_DIR = Path("logos")   # optional local logos folder
-DATA_DIR = Path("outputs") # CSVs live here now
+DATA_DIR = Path("outputs") # CSVs live here
 
 # Two-way players to exclude from hitter-only rankings
 TWO_WAY_PLAYERS = {"Shohei Ohtani"}  # add more if needed
@@ -38,7 +45,7 @@ def _wape(y_true, y_pred):
 
 def _style_value_colors(series: pd.Series):
     """Green for bargains (negative residuals), red for overpays (positive).
-    NOTE: Your 'Value' = Actual − Pred."""
+    NOTE: Value = Actual − Pred."""
     return ["color: #22c55e" if v < 0 else ("color: #ef4444" if v > 0 else "") for v in series]
 
 def _make_styler(df_num: pd.DataFrame):
@@ -176,7 +183,7 @@ if "Player" in overpays.columns:
 # =========================
 st.sidebar.header("Filters")
 
-# Team multiselect (robust to column presence)
+# Team multiselect
 teams = sorted(set(bargains["Team"].dropna().unique()).union(set(overpays["Team"].dropna().unique()))) if "Team" in bargains.columns and "Team" in overpays.columns else []
 team_sel = st.sidebar.multiselect("Teams", teams, default=[])
 
@@ -211,30 +218,35 @@ st.caption(
 st.markdown("---")
 
 # =========================
-# Metrics (overall 2023)
+# Metrics (overall 2023) — NO 'Observations'
 # =========================
 both = pd.concat([bargains, overpays], ignore_index=True)
 mae_all, wape_all = compute_metrics(both)
 
-mc1, mc2, mc3 = st.columns(3)
+mc1, mc2 = st.columns(2)
 with mc1:
     st.metric("MAE (2023)", _money(mae_all) if np.isfinite(mae_all) else "—")
 with mc2:
     st.metric("WAPE (2023)", f"{wape_all:.1f}%" if np.isfinite(wape_all) else "—")
-with mc3:
-    st.metric("Observations", f"{len(both):,}")
 
 # =========================
-# Tables
+# Tables & Visuals
 # =========================
 st.subheader("Rankings")
-t1, t2 = st.tabs(["✅ Top Bargains", "⚠️ Top Overpays"])
+tab_labels = ["✅ Top Bargains", "⚠️ Top Overpays"] + (["📈 Visuals"] if VISUALS_AVAILABLE else [])
+tabs = st.tabs(tab_labels)
 
-with t1:
+# Tab 1: Bargains
+with tabs[0]:
     b_disp = filter_and_sort(bargains, team_sel, player_query, min_war, min_pa, sort_abs, is_bargain=True)
     st.dataframe(_make_styler(_add_logo_column(b_disp)), use_container_width=True)
-    # Match downloads to two-way filter only (not sidebar filters), to keep “source” CSVs intact
-    b_dl = bargains_raw[~bargains_raw.get("name", bargains_raw.get("player", pd.Series([]))).isin(TWO_WAY_PLAYERS)] if "name" in bargains_raw.columns or "player" in bargains_raw.columns else bargains_raw
+    # Download (source, two-way filtered only)
+    if "name" in bargains_raw.columns:
+        b_dl = bargains_raw[~bargains_raw["name"].isin(TWO_WAY_PLAYERS)]
+    elif "player" in bargains_raw.columns:
+        b_dl = bargains_raw[~bargains_raw["player"].isin(TWO_WAY_PLAYERS)]
+    else:
+        b_dl = bargains_raw
     st.download_button(
         "Download bargains (source, two-way filtered)",
         b_dl.to_csv(index=False).encode("utf-8"),
@@ -242,16 +254,58 @@ with t1:
         "text/csv"
     )
 
-with t2:
+# Tab 2: Overpays
+with tabs[1]:
     o_disp = filter_and_sort(overpays, team_sel, player_query, min_war, min_pa, sort_abs, is_bargain=False)
     st.dataframe(_make_styler(_add_logo_column(o_disp)), use_container_width=True)
-    o_dl = overpays_raw[~overpays_raw.get("name", overpays_raw.get("player", pd.Series([]))).isin(TWO_WAY_PLAYERS)] if "name" in overpays_raw.columns or "player" in overpays_raw.columns else overpays_raw
+    if "name" in overpays_raw.columns:
+        o_dl = overpays_raw[~overpays_raw["name"].isin(TWO_WAY_PLAYERS)]
+    elif "player" in overpays_raw.columns:
+        o_dl = overpays_raw[~overpays_raw["player"].isin(TWO_WAY_PLAYERS)]
+    else:
+        o_dl = overpays_raw
     st.download_button(
         "Download overpays (source, two-way filtered)",
         o_dl.to_csv(index=False).encode("utf-8"),
         "top_overpays_2023.csv",
         "text/csv"
     )
+
+# Tab 3: Visuals (optional)
+if VISUALS_AVAILABLE:
+    with tabs[2]:
+        # Build the same filtered view the tables are using
+        b_view = filter_and_sort(bargains, team_sel, player_query, min_war, min_pa, sort_abs, is_bargain=True)
+        o_view = filter_and_sort(overpays, team_sel, player_query, min_war, min_pa, sort_abs, is_bargain=False)
+        vis = pd.concat([b_view.assign(category="Bargain"), o_view.assign(category="Overpay")], ignore_index=True)
+        if {"Actual Salary","Predicted Salary"}.issubset(vis.columns) and len(vis) > 0:
+            c1, c2 = st.columns(2)
+
+            # Scatter: Actual vs Predicted
+            with c1:
+                fig1, ax1 = plt.subplots(figsize=(5,4))
+                ax1.scatter(vis["Predicted Salary"], vis["Actual Salary"], alpha=0.7)
+                mn = float(min(vis["Predicted Salary"].min(), vis["Actual Salary"].min()))
+                mx = float(max(vis["Predicted Salary"].max(), vis["Actual Salary"].max()))
+                ax1.plot([mn, mx], [mn, mx], linewidth=1)  # 45-degree line
+                ax1.set_xlabel("Predicted Salary")
+                ax1.set_ylabel("Actual Salary")
+                ax1.set_title("Actual vs Predicted")
+                st.pyplot(fig1, use_container_width=True)
+
+            # Bar: Top 10 absolute gaps
+            with c2:
+                vis2 = vis.copy()
+                vis2["abs_gap"] = (vis2["Actual Salary"] - vis2["Predicted Salary"]).abs()
+                top10 = vis2.nlargest(10, "abs_gap")[["Player","abs_gap"]].set_index("Player").sort_values("abs_gap")
+                fig2, ax2 = plt.subplots(figsize=(5,4))
+                top10["abs_gap"].plot(kind="barh", ax=ax2)
+                ax2.set_xlabel("Absolute Gap ($)")
+                ax2.set_ylabel("")
+                ax2.set_title("Top 10 Absolute Gaps (Filtered View)")
+                st.pyplot(fig2, use_container_width=True)
+        else:
+            st.info("Add filters or ensure salary columns exist to see visuals.")
 
 # Combined download of the *filtered views* (what the user is currently seeing)
 st.markdown("### Download current view (filtered)")
@@ -262,6 +316,19 @@ st.download_button(
     "mlb_value_filtered_combined.csv",
     "text/csv"
 )
+
+# Player spotlight
+st.markdown("---")
+st.subheader("Player spotlight")
+spot_df = comb.copy()
+player_options = spot_df["Player"].dropna().unique().tolist() if "Player" in spot_df.columns else []
+if player_options:
+    pick = st.selectbox("Choose a player", ["—"] + player_options, index=0)
+    if pick != "—":
+        card = spot_df[spot_df["Player"] == pick].head(1).copy()
+        st.dataframe(_make_styler(_add_logo_column(card)), use_container_width=True)
+else:
+    st.caption("No players available in the current filtered view.")
 
 # =========================
 # About / Caveats
